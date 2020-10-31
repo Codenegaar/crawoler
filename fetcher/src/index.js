@@ -1,0 +1,198 @@
+require("dotenv").config();
+const amqp = require("amqplib/callback_api");
+const winston = require("winston");
+const path = require("path");
+const redis = require("redis");
+const scrape = require("website-scraper");
+
+/**
+ * Configure the logger
+ */
+let logger;
+async function configureLogger() {
+    const format = winston.format.combine(
+        winston.format.colorize(),
+        winston.format.align(),
+        winston.format.cli({ colors: {
+            info: 'blue',
+            error: 'red',
+            warning: 'yellow',
+        }})
+    );
+
+    logger = new winston.createLogger({
+        transports: [
+            new winston.transports.Console({
+                format: format
+            }),
+            new winston.transports.File({
+                filename: path.join(__dirname, "../../logs/frontier.log"),
+                level: 'silly',
+                maxsize: 5000
+            }),
+        ],
+        level: 'silly'
+    });
+
+    logger.info(`Logger started`);
+}
+
+/**
+ * Connect to redis
+ */
+let redisClient;
+async function connectToRedis() {
+    await new Promise((resolve, reject) => {
+        redisClient = redis.createClient(process.env.REDIS_PORT, process.env.REDIS_HOST);
+        redisClient.on('connect', () => {
+            logger.info(`Connected to the redis store`);
+            
+            logger.verbose(`Making sure ID counter is set`);
+            redisClient.exists('urlIdSeq', (err, reply) => {
+                if (err) {
+                    logger.error(`Error checking key existence: urlIdSeq`);
+                    reject();
+                    return;
+                }
+
+                if (reply === 1) {
+                    logger.verbose(`urlIdSeq already exists`);
+                    resolve();
+                } else {
+                    logger.verbose(`urlIdSeq doesn't exist, creating with value = 1 `);
+                    redisClient.set('urlIdSeq', 1, () => {
+                        resolve();
+                    });
+                }
+            });
+        });
+    });
+}
+
+/**
+ * Connect to rabbitMQ
+ */
+let rmqConnection;
+async function connectToRmq() {
+    //Create connection
+    rmqConnection = await new Promise((resolve, reject) => {
+        amqp.connect(
+            "amqp://" + process.env.AMQP_HOST,
+            (error, connection) => {
+                if (error) {
+                    reject(error);
+                } else {
+                    logger.info(`Connected to rabbitmq`);
+                    resolve(connection);
+                }
+            }
+        );
+    });
+}
+
+/**
+ * Create consumer channel
+ * This channel consumes from to_crawl queue
+ */
+async function createConsumerChannel() {
+    let channel = await new Promise((resolve, reject) => {
+        rmqConnection.createChannel((error, channel) => {
+            if (error) reject(error);
+            else resolve(channel);
+        });
+    });
+
+    let queueName = "to_crawl";
+    channel.assertQueue(queueName, {
+        durable: false
+    });
+    
+    logger.info("Consumer queue has been registered and is ready to consume");
+
+    channel.consume(queueName, consume, {
+        noAck: true
+    });
+}
+
+/**
+ * Create publisher channel.
+ * This channel publishes messages to "to_parse" queue
+ */
+let publisherChannel;
+const publishQueue = "to_parse";
+async function createPublisherChannel() {
+    publisherChannel = await new Promise((resolve, reject) => {
+        rmqConnection.createChannel((err, channel) => {
+            if (err) {
+                logger.error(`Error creating a channel for publishing: ${err}`);
+                reject(err);
+                return;
+            }
+            resolve(channel);
+        });
+    });
+    publisherChannel.assertQueue(publishQueue, { durable: false });
+    logger.info(`Publisher channel has been registered and is ready to publish`);
+}
+
+/**
+ * consume callback, called whenever a new message
+ * is consumed from to_crawl
+ */
+async function consume(message) {
+    let id = message.content.readUInt32BE();
+    logger.info(`Consumed message to fetch URL ID: ${id}`);
+
+    //Get URL associated with this ID
+    let url = await new Promise( (resolve, reject) => {
+        redisClient.get(id, (err, reply) => {
+            if (err) {
+                logger.error(`Error finding URL ID: ${id}: ${err}`);
+                reject();
+            } else {
+                resolve(reply);
+            }
+        });
+    } );
+    logger.verbose(`URL matching ID: ${id} is: ${url}`);
+
+    //Fetch and save
+    let scrapingOptions = {
+        urls: [ url ],
+        directory: path.join(__dirname, "../../websites/" + id),
+        sources: [] //only download HTML
+    };
+    try {
+        const result = await scrape(scrapingOptions);
+        logger.verbose(`Saved URL ID ${id}`);
+    } catch (err) {
+        logger.error(`Error scraping URL ID ${id}: ${err}`);
+    }
+}
+
+/**
+ * Publish a message to the "to_parse" queue
+ */
+function publishUrl(urlId) {
+
+}
+
+async function start() {
+    //Configure the logger
+    await configureLogger();
+
+    //Connect to Redis
+    await connectToRedis();
+
+    //Connect to RabbitMQ
+    await connectToRmq();
+
+    //Create publisher channel, should be done before consuming
+    //  so consumer won't fail on sending to undefined publisher
+    await createPublisherChannel();
+
+    //Create consumer and start consuming
+    await createConsumerChannel();
+}
+
+start();

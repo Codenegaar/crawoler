@@ -1,0 +1,18 @@
+{
+  "name": "crawoler-fetcher",
+  "version": "0.1.0",
+  "description": "Simple fetcher for crawoler",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Ali Rashidi",
+  "license": "ISC",
+  "dependencies": {
+    "amqplib": "^0.6.0",
+    "dotenv": "^8.2.0",
+    "redis": "^3.0.2",
+    "website-scraper": "^4.2.3",
+    "winston": "^3.3.3"
+  }
+}
