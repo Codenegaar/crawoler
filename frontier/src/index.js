@@ -94,9 +94,10 @@ async function connectToRabbitmq() {
 /**
  * Create a channel for consuming from to_enqueue
  */
+let consumerChannel;
 async function createConsumerChannel() {
     //Create channel
-    let channel = await new Promise((resolve, reject) => {
+    consumerChannel = await new Promise((resolve, reject) => {
         rmqConnection.createChannel((error, channel) => {
             if (error) reject(error);
             else resolve(channel);
@@ -104,14 +105,15 @@ async function createConsumerChannel() {
     });
 
     let queueName = "to_enqueue";
-    channel.assertQueue(queueName, {
+    consumerChannel.assertQueue(queueName, {
         durable: false
     });
+    consumerChannel.prefetch(1);
     
     logger.info("Consumer queue has been registered and is ready to consume");
 
-    channel.consume(queueName, consume, {
-        noAck: true
+    consumerChannel.consume(queueName, consume, {
+        noAck: false
     });
 }
 
@@ -167,7 +169,7 @@ async function consume(message) {
     if (match) {
         //URL matches the host, process and enqueue it if valid
         logger.verbose(`Consumed URL ${url} matches host ${process.env.FRONTIER_HOST}`);
-        processUrl(url);
+        await processUrl(url, message);
     } else {
         logger.verbose(`Consumed URL ${url} did not match host ${process.env.FRONTIER_HOST}`);
     }
@@ -185,18 +187,22 @@ async function matchesHost(url) {
  * Processes a received URL and adds it to the to_crawl queue.
  * Checks if the URL has not been processed before 
  */
-async function processUrl(url) {
+async function processUrl(url, message) {
     logger.verbose(`Processing URL: ${url}`);
 
     //Check if URL exists in the store
     redisClient.exists(url, (err, reply) => {
         if (err) {
             logger.error(`Error checking existence of URL ${url}: ${err}`);
+            //Acknowledge
+            consumerChannel.nack(message);
             return;
         }
 
         if (reply === 1) {
             logger.info(`URL ${url} already exists`);
+            //Acknowledge
+            consumerChannel.ack(message);
             return;
         }
 
@@ -205,6 +211,8 @@ async function processUrl(url) {
         redisClient.get('urlIdSeq', (err, reply) => {
             if (err) {
                 logger.error(`Error getting urlIdSeq: ${err}`);
+                //Acknowledge
+                consumerChannel.nack(message);
                 return;
             }
 
@@ -222,6 +230,10 @@ async function processUrl(url) {
                 logger.verbose(`URL is new and has been assigned with ID: ${reply}`);
                 //Put URL in queue
                 publishUrl(reply);
+                //Wait and Acknowledge
+                setTimeout(() => {
+                    consumerChannel.ack(message);
+                }, 5000);
             });
         });
     });
