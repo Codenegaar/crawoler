@@ -1,4 +1,5 @@
 const path = require("path");
+const fs = require("fs");
 require("dotenv").config({
     path: path.join(__dirname, "../../.env")
 });
@@ -138,6 +139,28 @@ async function createPublisherChannel() {
 }
 
 /**
+ * Create analyzer channel.
+ * Messages published on this channel will be forwarded to the analyzer 
+ * to make analysis and calculations
+ */
+let analyzerChannel;
+const analyzeQueue = "to_analyze";
+async function createAnalyzerChannel() {
+    analyzerChannel = await new Promise((resolve, reject) => {
+        rmqConnection.createChannel((err, channel) => {
+            if (err) {
+                logger.error(`Error creating a channel for analyzing: ${err}`);
+                reject(err);
+                return;
+            }
+            resolve(channel);
+        });
+    });
+    analyzerChannel.assertQueue(analyzeQueue, { durable: false });
+    logger.info(`Analyzer channel has been registered and is ready to publish`);
+}
+
+/**
  * consume callback, called whenever a new message
  * is consumed from to_crawl
  */
@@ -169,8 +192,12 @@ async function consume(message) {
         logger.verbose(`Saved URL ID ${id}`);
 
         //Publish message to inform parser
+        publishUrl(id);
 
         //Publish message to analyzer
+        publishPageSize(id);
+
+        logger.info(`Done fetching URL ID ${id}`);
     } catch (err) {
         logger.error(`Error scraping URL ID ${id}: ${err}`);
     }
@@ -180,7 +207,36 @@ async function consume(message) {
  * Publish a message to the "to_parse" queue
  */
 function publishUrl(urlId) {
+    logger.verbose(`Publising URL ID ${urlId} to be parsed`);
+    let buf = Buffer.allocUnsafe(4);
+    buf.writeUInt32BE(urlId);
+    publisherChannel.sendToQueue(publishQueue, buf);
+}
 
+/**
+ * Find webpage size and send it to be analyzed (to_analyze queue)
+ */
+function publishPageSize(urlId) {
+    logger.verbose(`Publishing page size of ${urlId} to be analyzed`);
+
+    //Get file size
+    const stat = fs.statSync(path.join(
+        __dirname, "../../websites/" + urlId + "/index.html"
+    ));
+    const size = stat.size;
+
+    //Create message
+    let message = {
+        dataType: "FILE_SIZE",
+        payload: {
+            size: size,
+            urlId: urlId
+        }
+    };
+    //Publish
+    analyzerChannel.sendToQueue(analyzeQueue, Buffer.from(
+        JSON.stringify(message)
+    ));
 }
 
 async function start() {
@@ -196,6 +252,9 @@ async function start() {
     //Create publisher channel, should be done before consuming
     //  so consumer won't fail on sending to undefined publisher
     await createPublisherChannel();
+
+    //Create analyzer channel
+    await createAnalyzerChannel();
 
     //Create consumer and start consuming
     await createConsumerChannel();
