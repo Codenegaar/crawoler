@@ -1,7 +1,9 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({
+    path: path.join(__dirname, "../../.env")
+});
 const amqp = require("amqplib/callback_api");
 const winston = require("winston");
-const path = require("path");
 const redis = require("redis");
 
 /**

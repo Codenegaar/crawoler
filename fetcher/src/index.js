@@ -1,7 +1,9 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({
+    path: path.join(__dirname, "../../.env")
+});
 const amqp = require("amqplib/callback_api");
 const winston = require("winston");
-const path = require("path");
 const redis = require("redis");
 const scrape = require("website-scraper");
 
@@ -26,7 +28,7 @@ async function configureLogger() {
                 format: format
             }),
             new winston.transports.File({
-                filename: path.join(__dirname, "../../logs/frontier.log"),
+                filename: path.join(__dirname, "../../logs/fetcher.log"),
                 level: 'silly',
                 maxsize: 5000
             }),
@@ -165,6 +167,10 @@ async function consume(message) {
     try {
         const result = await scrape(scrapingOptions);
         logger.verbose(`Saved URL ID ${id}`);
+
+        //Publish message to inform parser
+
+        //Publish message to analyzer
     } catch (err) {
         logger.error(`Error scraping URL ID ${id}: ${err}`);
     }
