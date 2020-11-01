@@ -8,6 +8,10 @@ const winston = require("winston");
 const cheerio = require("cheerio");
 const redis = require("redis");
 
+const { gunzip } = require('zlib');
+const { promisify } = require("util");
+const doGunzip = promisify(gunzip);
+
 /**
  * Configure the logger
  */
@@ -172,26 +176,53 @@ async function parseLinks(urlId) {
     } );
     logger.debug(`URL for ID ${urlId} is ${url}`);
 
-    $ = cheerio.load(fs.readFileSync(
-        path.join(__dirname, "../../websites/" + urlId + "/index.html")
-    ));
+    let fileName = process.env.COMPRESS === 'TRUE' ? "index.html.gz" : "index.html";
+    let dir = path.join(
+        __dirname, "../../websites/" + urlId + "/" + fileName
+    );
+
+    //Extract if needed
+    let buffer = fs.readFileSync(dir);
+    if (process.env.COMPRESS === 'TRUE') {
+        let buf = await doGunzip(buffer);
+        buffer = buf;
+    }
+
+    $ = cheerio.load(buffer);
 
     links = $('a');
     $(links).each(function(i, link) {
         let finalUrl = $(link).attr('href');
-        if (finalUrl.startsWith("/")) 
-            finalUrl = (url + finalUrl);
+        if (finalUrl.length >= 3) {
+            
+            if (finalUrl.startsWith("/")) 
+                finalUrl = (url + finalUrl);
 
-        //Publish to "to_enqueue"
-        publishToEnqueue(finalUrl);
-        //Publish to "to_analyze"
+            //Publish to "to_enqueue"
+            publishToEnqueue(finalUrl);
+            //Publish to "to_analyze"
+            publishToAnalyzer(finalUrl);
+        }
     });
 }
 
 /**
  * Publish new link to analyzer 
  */
-function publishToAnalyzer(){}
+function publishToAnalyzer(url){
+    logger.verbose(`Publishing analysis data`);
+    let message = {
+        event: 'DISCOVER',
+        payload: {
+            url: url
+        }
+    };
+
+    //Publish
+    analyzerChannel.sendToQueue(analyzeQueue, Buffer.from(
+        JSON.stringify(message)
+    ));
+}
 
 /**
  * PUblish to to_enqueue

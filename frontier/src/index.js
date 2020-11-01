@@ -108,12 +108,14 @@ async function createConsumerChannel() {
     consumerChannel.assertQueue(queueName, {
         durable: false
     });
+    //This makes sure that the cannel will receive one 
+    //  message at a time (only 1 non-acked message is allowed)
     consumerChannel.prefetch(1);
     
     logger.info("Consumer queue has been registered and is ready to consume");
 
     consumerChannel.consume(queueName, consume, {
-        noAck: false
+        noAck: false    //Messages should be acked explicitly
     });
 }
 
@@ -172,6 +174,7 @@ async function consume(message) {
         await processUrl(url, message);
     } else {
         logger.verbose(`Consumed URL ${url} did not match host ${process.env.FRONTIER_HOST}`);
+        consumerChannel.ack(message);
     }
 }
 
@@ -179,7 +182,7 @@ async function consume(message) {
  * Check if the consumed URL matches the host
  */
 async function matchesHost(url) {
-    let hostReg = new RegExp("^(http://)?" + process.env.FRONTIER_HOST + ".*$");
+    let hostReg = new RegExp("^(http://|https://)?(www)?" + process.env.FRONTIER_HOST + ".*$");
     return url.match(hostReg);
 }
 
@@ -232,8 +235,12 @@ async function processUrl(url, message) {
                 publishUrl(reply);
                 //Wait and Acknowledge
                 setTimeout(() => {
+                    if (nextId >= 300) {
+                        //Finish parsing
+                        process.exit(0);
+                    }
                     consumerChannel.ack(message);
-                }, 5000);
+                }, parseInt(process.env.FRONTIER_PUSH_DELAY));
             });
         });
     });

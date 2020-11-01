@@ -3,10 +3,20 @@ const fs = require("fs");
 require("dotenv").config({
     path: path.join(__dirname, "../../.env")
 });
+
 const amqp = require("amqplib/callback_api");
 const winston = require("winston");
 const redis = require("redis");
 const scrape = require("website-scraper");
+
+const { createGzip } = require('zlib');
+const { pipeline } = require('stream');
+const { promisify } = require("util");
+const pipe = promisify(pipeline);
+const {
+    createReadStream,
+    createWriteStream
+  } = require('fs');
 
 /**
  * Configure the logger
@@ -190,12 +200,24 @@ async function consume(message) {
     try {
         const result = await scrape(scrapingOptions);
         logger.verbose(`Saved URL ID ${id}`);
+        let dir = path.join(__dirname, "../../websites/" + id + "/");
+        let fileName = "index.html";
+
+        if (process.env.COMPRESS === 'TRUE') {
+            logger.verbose('Compressing');
+            const gzip = createGzip();
+            const source = createReadStream(dir + "/index.html");
+            const destination = createWriteStream(dir + "/index.html.gz");
+
+            await pipe(source, gzip, destination);
+            fileName = "index.html.gz";
+        }
 
         //Publish message to inform parser
         publishUrl(id);
 
         //Publish message to analyzer
-        publishPageSize(id);
+        publishToAnalyzer(id, url, dir + "/" + fileName);
 
         logger.info(`Done fetching URL ID ${id}`);
     } catch (err) {
@@ -216,21 +238,22 @@ function publishUrl(urlId) {
 /**
  * Find webpage size and send it to be analyzed (to_analyze queue)
  */
-function publishPageSize(urlId) {
+function publishToAnalyzer(urlId, url, filePath) {
     logger.verbose(`Publishing page size of ${urlId} to be analyzed`);
 
     //Get file size
-    const stat = fs.statSync(path.join(
-        __dirname, "../../websites/" + urlId + "/index.html"
-    ));
+    // const stat = fs.statSync(path.join(
+    //     __dirname, "../../websites/" + urlId + "/index.html"
+    // ));
+    const stat = fs.statSync(filePath);
     const size = stat.size;
+    logger.debug(`Page size of ${urlId} is ${size}`);
 
     //Create message
     let message = {
-        dataType: "FILE_SIZE",
+        event: "FETCH",
         payload: {
             size: size,
-            urlId: urlId
         }
     };
     //Publish
